@@ -4,4 +4,4 @@ all:
 	gcc chip8.c -o chip8 $(CFLAGS) `sdl2-config --cflags --libs`
 
 run: all
-	./chip8
+	./chip8 roms/ibm_logo.ch8
