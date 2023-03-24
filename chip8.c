@@ -7,6 +7,9 @@
 
 #define DEBUG
 
+#define WIDTH  64
+#define HEIGHT 32
+
 typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
@@ -152,9 +155,9 @@ bool set_config_from_args(config_t *config, const int argc, char **argv) {
     *config = (config_t){
         .window_width  = 64,
         .window_height = 32,
-        .fg_color      = 0x00AA00FF,
-        .bg_color      = 0xFF22EEFF,
-        .scale_factor  = 10,
+        .fg_color      = 0x0FEEEEFF,
+        .bg_color      = 0x020022FF,
+        .scale_factor  = 20,
     };
 
     // overrides
@@ -175,7 +178,35 @@ void clear_screen(const sdl_t sdl, const config_t config) {
     SDL_RenderClear(sdl.renderer);
 }
 
-void update_screen(const sdl_t sdl) {
+void update_screen(const sdl_t sdl, const config_t config, const vm_t *vm) {
+    SDL_Rect rect = {.x = 0, .y = 0, .w = config.scale_factor, .h = config.scale_factor};
+
+    const uint8_t fg_r = config.fg_color >> 24;
+    const uint8_t fg_g = config.fg_color >> 16;
+    const uint8_t fg_b = config.fg_color >> 8;
+    const uint8_t fg_a = config.fg_color >> 0;
+
+    const uint8_t bg_r = config.bg_color >> 24;
+    const uint8_t bg_g = config.bg_color >> 16;
+    const uint8_t bg_b = config.bg_color >> 8;
+    const uint8_t bg_a = config.bg_color >> 0;
+
+    // draw rectangle per set pixels in display
+    for (uint32_t i = 0; i < sizeof vm->display; i++) {
+        rect.x = (i % WIDTH) * config.scale_factor;
+        rect.y = (i / WIDTH) * config.scale_factor;
+
+        if (vm->display[i]) {
+            // if pixel is on draw fg colour
+            SDL_SetRenderDrawColor(sdl.renderer, fg_r, fg_g, fg_b, fg_a);
+            SDL_RenderFillRect(sdl.renderer, &rect);
+        } else {
+            // if pixel is on draw bg colour
+            SDL_SetRenderDrawColor(sdl.renderer, bg_r, bg_g, bg_b, bg_a);
+            SDL_RenderFillRect(sdl.renderer, &rect);
+        }
+    }
+
     SDL_RenderPresent(sdl.renderer);
 }
 
@@ -223,7 +254,7 @@ void print_debug_info(vm_t *vm) {
     printf("Address: 0x%04X, op: 0x%04X, desc: ", vm->pc - 2, vm->ins.opcode);
 
     switch ((vm->ins.opcode >> 12) & 0x0F) {
-    case 0x00:
+    case 0x0:
         if (vm->ins.nn == 0xE0) {
             // 00E0: Clears the screen.
             printf("Clear screen\n");
@@ -236,24 +267,35 @@ void print_debug_info(vm_t *vm) {
         }
         break;
 
-    case 0x01:
+    case 0x1:
         // 1NNN: Jump to address NNN
         printf("Jump to address NNN (0x%04X)\n", vm->ins.nnn);
         break;
 
-    case 0x02:
+    case 0x2:
         // 2NNN: Call subroutine at NNN
         printf("Call subroutine at NNN (0x%04X)\n", vm->ins.nnn);
         break;
 
-    case 0x06:
+    case 0x6:
         // 6XNN: Sets VX to NN.
         printf("Set V%d to NN (0x%02X)\n", vm->ins.x, vm->ins.nn);
         break;
 
-    case 0x0A:
+    case 0x7:
+        printf("Add NN (0x%02X) to V%d\n", vm->ins.nn, vm->ins.x);
+        break;
+        // 7XNN: Adds NN to VX (carry flag is not changed).
+
+    case 0xA:
         // ANNN: Sets I to the address NNN.
-        printf("Set I to NNN (0x%04X\n)", vm->ins.nnn);
+        printf("Set I to NNN (0x%04X)\n", vm->ins.nnn);
+        break;
+
+    case 0xD:
+        // DXYN: Draws a sprite at coordinate (VX, VY)
+        printf("Draw N (%u) height sprite at coordinate V%X: %u V%X: %u from memory location I (0x%X)\n",
+               vm->ins.n, vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y], vm->i);
         break;
 
     default:
@@ -269,6 +311,7 @@ void run_instruction(vm_t *vm) {
 
     // fill out current instruction format
     // TODO using bitfields could make this easier?
+    // TODO can just use local ins var instead of vm->ins?
     vm->ins.nnn = vm->ins.opcode & 0x0FFF;
     vm->ins.nn  = vm->ins.opcode & 0x0FF;
     vm->ins.n   = vm->ins.opcode & 0x0F;
@@ -286,25 +329,71 @@ void run_instruction(vm_t *vm) {
             memset(&vm->display[0], false, sizeof vm->display);
         } else if (vm->ins.nn == 0xEE) {
             // 00EE: Returns from a subroutine.
-            // grab last address from subroutine stack (pop)
-            vm->pc = *(--vm->stack_ptr);
+            vm->pc = *(--vm->stack_ptr); // grab last address from subroutine stack (pop)
         }
         break;
 
-    case 0x02:
+    case 0x2:
         // 2NNN: Calls machine code routine at address NNN.
         *vm->stack_ptr++ = vm->pc;      // store current address to return to on stac (push)
         vm->pc           = vm->ins.nnn; // set program counter to subroutine address, so next opcode is gotten from there
         break;
 
-    case 0x06:
+    case 0x6:
         // 6XNN: Sets VX to NN.
         vm->v[vm->ins.x] = vm->ins.nn;
         break;
 
-    case 0x0A:
+    case 0x7:
+        // 7XNN: Adds NN to VX (carry flag is not changed).
+        vm->v[vm->ins.x] += vm->ins.nn;
+        break;
+
+    case 0xA:
         // ANNN: Sets I to the address NNN.
         vm->i = vm->ins.nnn;
+        break;
+
+    case 0xD:
+        // DXYN: Draws a sprite at coordinate (VX, VY) that has a width of 8 pixels and a height of N pixels.
+        // Each row of 8 pixels is read as bit-coded starting from memory location I; I value does
+        // not change after the execution of this instruction.
+        // VF is set to 1 if any screen pixels are flipped from set to unset when the sprite is
+        // drawn, and to 0 if that does not happen (this is used for collision detection).
+
+        // wrap around the edges of the screen
+        // using '&' instead of 'modulo' as x % y == x & (y - 1) when y is a power of 2
+        uint8_t x = vm->v[vm->ins.x] & (WIDTH - 1);
+        uint8_t y = vm->v[vm->ins.y] & (HEIGHT - 1);
+
+        const uint8_t og_x = x;
+
+        vm->v[0x0F] = 0; // init carry flag to 0
+
+        // loop over sprite rows (N in total)
+        for (uint8_t i = 0; i < vm->ins.n; i++) {
+            const uint8_t sprite_data = vm->ram[vm->i + i]; // next byte/row of sprite data
+
+            x = og_x; // reset x for next row to draw
+
+            for (int8_t j = 7; j >= 0; j--) {
+                const bool sprite_bit = (sprite_data & (1 << j));
+                bool *pixel           = &vm->display[y * WIDTH + x];
+
+                // if sprite pixel is on and display pixel is on, set carry flag
+                if (sprite_bit && pixel) vm->v[0x0F] = 1;
+
+                // xor display pixel with sprite pixel to set it on/off
+                *pixel ^= sprite_bit;
+
+                // stop drawing if hit right screen edge
+                if (++x >= WIDTH) break;
+            }
+
+            // stop drawing the entire sprite if hit bottom screen edge
+            if (++y >= HEIGHT) break;
+        }
+
         break;
 
     default:
@@ -341,10 +430,9 @@ int main(int argc, char **argv) {
 
         run_instruction(&vm);
 
-        // delay for ~60hz/60fps
-        SDL_Delay(16);
+        SDL_Delay(16); // delay for ~60hz/60fps
 
-        update_screen(sdl);
+        update_screen(sdl, config, &vm);
     }
 
     // final cleanup
