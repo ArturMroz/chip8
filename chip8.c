@@ -5,6 +5,8 @@
 
 #include "SDL.h"
 
+#define DEBUG
+
 typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
@@ -216,17 +218,66 @@ void handle_input(vm_t *vm) {
     }
 }
 
+#ifdef DEBUG
+void print_debug_info(vm_t *vm) {
+    printf("Address: 0x%04X, op: 0x%04X, desc: ", vm->pc - 2, vm->ins.opcode);
+
+    switch ((vm->ins.opcode >> 12) & 0x0F) {
+    case 0x00:
+        if (vm->ins.nn == 0xE0) {
+            // 00E0: Clears the screen.
+            printf("Clear screen\n");
+
+        } else if (vm->ins.nn == 0xEE) {
+            // 0x00EE: Return from subroutine
+            printf("Return from subroutine to address 0x%04X\n", *(vm->stack_ptr - 1));
+        } else {
+            printf("Unimplemented opcode.\n");
+        }
+        break;
+
+    case 0x01:
+        // 1NNN: Jump to address NNN
+        printf("Jump to address NNN (0x%04X)\n", vm->ins.nnn);
+        break;
+
+    case 0x02:
+        // 2NNN: Call subroutine at NNN
+        printf("Call subroutine at NNN (0x%04X)\n", vm->ins.nnn);
+        break;
+
+    case 0x06:
+        // 6XNN: Sets VX to NN.
+        printf("Set V%d to NN (0x%02X)\n", vm->ins.x, vm->ins.nn);
+        break;
+
+    case 0x0A:
+        // ANNN: Sets I to the address NNN.
+        printf("Set I to NNN (0x%04X\n)", vm->ins.nnn);
+        break;
+
+    default:
+        printf("Unimplemented or invalid opcode\n");
+    }
+}
+#endif
+
 void run_instruction(vm_t *vm) {
     // little endian to big endian
     vm->ins.opcode = (vm->ram[vm->pc] << 8) | vm->ram[vm->pc + 1];
     vm->pc += 2;
 
     // fill out current instruction format
+    // TODO using bitfields could make this easier?
     vm->ins.nnn = vm->ins.opcode & 0x0FFF;
     vm->ins.nn  = vm->ins.opcode & 0x0FF;
     vm->ins.n   = vm->ins.opcode & 0x0F;
     vm->ins.x   = (vm->ins.opcode >> 8) & 0x0F;
     vm->ins.y   = (vm->ins.opcode >> 4) & 0x0F;
+
+#ifdef DEBUG
+    print_debug_info(vm);
+#endif
 
     switch ((vm->ins.opcode >> 12) & 0x0F) {
     case 0x0:
@@ -241,13 +292,22 @@ void run_instruction(vm_t *vm) {
         break;
 
     case 0x02:
-        // 0x2NNN: Calls machine code routine at address NNN.
+        // 2NNN: Calls machine code routine at address NNN.
         *vm->stack_ptr++ = vm->pc;      // store current address to return to on stac (push)
         vm->pc           = vm->ins.nnn; // set program counter to subroutine address, so next opcode is gotten from there
         break;
 
+    case 0x06:
+        // 6XNN: Sets VX to NN.
+        vm->v[vm->ins.x] = vm->ins.nn;
+        break;
+
+    case 0x0A:
+        // ANNN: Sets I to the address NNN.
+        vm->i = vm->ins.nnn;
+        break;
+
     default:
-        fprintf(stderr, "unimplemented or invalid opcode %d\n", vm->ins.opcode);
         break; // unimplemented
     }
 }
