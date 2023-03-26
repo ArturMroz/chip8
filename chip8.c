@@ -139,7 +139,7 @@ bool init_vm(vm_t *vm, const char *rom_name) {
         return false;
     };
 
-    vm->ram[0x1FF] = 2; // set magic number to run test #2 directly
+    vm->ram[0x1FF] = 3; // set magic number to run test #2 directly
 
     fclose(rom);
 
@@ -463,6 +463,8 @@ void run_instruction(vm_t *vm) {
     vm->ins.x   = (vm->ins.opcode >> 8) & 0x0F;
     vm->ins.y   = (vm->ins.opcode >> 4) & 0x0F;
 
+    bool carry; // carry bit used for some instructions
+
 #ifdef DEBUG
     print_debug_info(vm);
 #endif
@@ -545,35 +547,40 @@ void run_instruction(vm_t *vm) {
             vm->v[vm->ins.x] ^= vm->v[vm->ins.y];
             break;
 
-        case 0x4:
+        case 0x4: {
             // 8XY4: Adds VY to VX. VF is set to 1 when there's a carry, and to 0 when there is not.
             const uint8_t ogx = vm->v[vm->ins.x];
             vm->v[vm->ins.x] += vm->v[vm->ins.y];
-            vm->v[0xF] = ogx < vm->v[vm->ins.x];
+            vm->v[0xF] = ogx > vm->v[vm->ins.x];
             break;
+        }
 
         case 0x5:
             // 8XY5: VY is subtracted from VX. VF is set to 0 when there's a borrow, and 1 when there is not.
-            vm->v[0xF] = vm->v[vm->ins.x] > vm->v[vm->ins.y];
+            carry = vm->v[vm->ins.x] > vm->v[vm->ins.y];
             vm->v[vm->ins.x] -= vm->v[vm->ins.y];
+            vm->v[0xF] = carry;
             break;
 
         case 0x6:
             // 8XY6 Stores the least significant bit of VX in VF and then shifts VX to the right by 1.
-            vm->v[0xF] = vm->v[vm->ins.x] & 0x1;
+            carry = vm->v[vm->ins.x] & 0x1;
             vm->v[vm->ins.x] >>= 1;
+            vm->v[0xF] = carry;
             break;
 
         case 0x7:
             // 8XY7: Sets VX to VY minus VX. VF is set to 0 when there's a borrow, and 1 when there is not.
-            vm->v[0xF]       = vm->v[vm->ins.y] > vm->v[vm->ins.x];
+            carry            = vm->v[vm->ins.y] > vm->v[vm->ins.x];
             vm->v[vm->ins.x] = vm->v[vm->ins.y] - vm->v[vm->ins.x];
+            vm->v[0xF]       = carry;
             break;
 
         case 0xE:
             // 8XYE: Stores the most significant bit of VX in VF and then shifts VX to the left by 1.
-            vm->v[0xF] = vm->v[vm->ins.x] & 0x80;
+            carry = (vm->v[vm->ins.x] & 0x80) >> 7;
             vm->v[vm->ins.x] <<= 1;
+            vm->v[0xF] = carry;
             break;
 
         default:
@@ -741,7 +748,7 @@ int main(int argc, char **argv) {
 
         run_instruction(&vm);
 
-        SDL_Delay(16); // delay for ~60hz/60fps
+        // SDL_Delay(16); // delay for ~60hz/60fps
 
         update_screen(sdl, config, &vm);
     }
