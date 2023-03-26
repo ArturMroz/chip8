@@ -16,12 +16,13 @@ typedef struct {
 } sdl_t;
 
 typedef struct {
-    uint16_t window_width;
-    uint16_t window_height;
-    uint32_t fg_color;
-    uint32_t bg_color;
-    uint16_t scale_factor;
-    bool pixel_border;
+    uint16_t window_width;  // emulation window width
+    uint16_t window_height; // emulation window height
+    uint32_t fg_color;      // foreground colour
+    uint32_t bg_color;      // background colour
+    uint16_t scale_factor;  // scale factor aka how thicc are pixels
+    bool pixel_border;      // draw pixel outlines
+    uint32_t clock_rate;    // number of instructions per second
 } config_t;
 
 typedef enum {
@@ -139,8 +140,6 @@ bool init_vm(vm_t *vm, const char *rom_name) {
         return false;
     };
 
-    vm->ram[0x1FF] = 3; // set magic number to run test #2 directly
-
     fclose(rom);
 
     // defaults
@@ -161,6 +160,7 @@ bool set_config_from_args(config_t *config, const int argc, char **argv) {
         .bg_color      = 0x020022FF,
         .scale_factor  = 20,
         .pixel_border  = false,
+        .clock_rate    = 700,
     };
 
     // overrides
@@ -218,7 +218,24 @@ void update_screen(const sdl_t sdl, const config_t config, const vm_t *vm) {
     SDL_RenderPresent(sdl.renderer);
 }
 
+void update_timers(vm_t *vm) {
+    if (vm->delay_timer > 0) vm->delay_timer--;
+
+    if (vm->sound_timer > 0) {
+        // TODO start playing sound
+        vm->sound_timer--;
+    } else {
+        // TODO stop playing sound
+    }
+}
+
 void handle_input(vm_t *vm) {
+    // chip8 keypad | qwerty | colemak
+    // 123C         | 1234   | 1234
+    // 456D         | qwer   | qwfp
+    // 789E         | asdf   | arst
+    // A0BF         | zxcv   | zxcd
+
     SDL_Event event;
 
     while (SDL_PollEvent(&event)) {
@@ -243,12 +260,56 @@ void handle_input(vm_t *vm) {
                 }
                 return;
 
+            case SDLK_1: vm->keypad[0x1] = true; break;
+            case SDLK_2: vm->keypad[0x2] = true; break;
+            case SDLK_3: vm->keypad[0x3] = true; break;
+            case SDLK_4: vm->keypad[0xC] = true; break;
+
+            case SDLK_q: vm->keypad[0x4] = true; break;
+            case SDLK_w: vm->keypad[0x5] = true; break;
+            case SDLK_e: vm->keypad[0x6] = true; break;
+            case SDLK_r: vm->keypad[0xD] = true; break;
+
+            case SDLK_a: vm->keypad[0x7] = true; break;
+            case SDLK_s: vm->keypad[0x8] = true; break;
+            case SDLK_d: vm->keypad[0x9] = true; break;
+            case SDLK_f: vm->keypad[0xE] = true; break;
+
+            case SDLK_z: vm->keypad[0xA] = true; break;
+            case SDLK_x: vm->keypad[0x0] = true; break;
+            case SDLK_c: vm->keypad[0xB] = true; break;
+            case SDLK_v: vm->keypad[0xF] = true; break;
+
             default:
                 break;
             }
             break;
 
         case SDL_KEYUP:
+            switch (event.key.keysym.sym) {
+            case SDLK_1: vm->keypad[0x1] = false; break;
+            case SDLK_2: vm->keypad[0x2] = false; break;
+            case SDLK_3: vm->keypad[0x3] = false; break;
+            case SDLK_4: vm->keypad[0xC] = false; break;
+
+            case SDLK_q: vm->keypad[0x4] = false; break;
+            case SDLK_w: vm->keypad[0x5] = false; break;
+            case SDLK_e: vm->keypad[0x6] = false; break;
+            case SDLK_r: vm->keypad[0xD] = false; break;
+
+            case SDLK_a: vm->keypad[0x7] = false; break;
+            case SDLK_s: vm->keypad[0x8] = false; break;
+            case SDLK_d: vm->keypad[0x9] = false; break;
+            case SDLK_f: vm->keypad[0xE] = false; break;
+
+            case SDLK_z: vm->keypad[0xA] = false; break;
+            case SDLK_x: vm->keypad[0x0] = false; break;
+            case SDLK_c: vm->keypad[0xB] = false; break;
+            case SDLK_v: vm->keypad[0xF] = false; break;
+
+            default:
+                break;
+            }
             break;
 
         default:
@@ -378,7 +439,7 @@ void print_debug_info(vm_t *vm) {
         break;
 
     case 0xC:
-        // CXNN: Sets VX to the result of a bitwise and operation on a random number (Typically: 0 to 255) and NN.
+        // CXNN: Sets VX to the result of a bitwise and operation on a random number (typically: 0 to 255) and NN.
         printf("Set V%d (0x%04X) = rand() & NN (0x%04X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.nn);
         break;
 
@@ -386,6 +447,18 @@ void print_debug_info(vm_t *vm) {
         // DXYN: Draws a sprite at coordinate (VX, VY)
         printf("Draw N (%u) height sprite at coordinate V%X: %u V%X: %u from memory location I (0x%X)\n",
                vm->ins.n, vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y], vm->i);
+        break;
+
+    case 0xE:
+        if (vm->ins.nn == 0x9E) {
+            // EX9E: Skips the next instruction if the key stored in VX is pressed.
+            printf("Skip the next instruction if the key stored in V%d (0x%X) is pressed (keypad: %u).\n", vm->ins.x, vm->v[vm->ins.x], vm->keypad[vm->v[vm->ins.x]]);
+        } else if (vm->ins.nn == 0xA1) {
+            // EXA1: Skips the next instruction if the key stored in VX is not pressed.
+            printf("Skip the next instruction if the key stored in V%d (0x%X) is not pressed (keypad: %u).\n", vm->ins.x, vm->v[vm->ins.x], vm->keypad[vm->v[vm->ins.x]]);
+        } else {
+            printf("Invalid opcode.\n");
+        }
         break;
 
     case 0xF:
@@ -397,7 +470,7 @@ void print_debug_info(vm_t *vm) {
 
         case 0x0A:
             // FX0A: A key press is awaited, and then stored in VX (blocking operation, all instruction halted until next key event).
-            printf("wait for key press, not imlepmented");
+            printf("Wait for key press... \n");
             break;
 
         case 0x15:
@@ -610,7 +683,7 @@ void run_instruction(vm_t *vm) {
         vm->v[vm->ins.x] = rand() & vm->ins.nn & 0xFF;
         break;
 
-    case 0xD:
+    case 0xD: {
         // DXYN: Draws a sprite at coordinate (VX, VY) that has a width of 8 pixels and a height of N pixels.
         // Each row of 8 pixels is read as bit-coded starting from memory location I; I value does
         // not change after the execution of this instruction.
@@ -637,7 +710,7 @@ void run_instruction(vm_t *vm) {
                 bool *pixel           = &vm->display[y * WIDTH + x];
 
                 // if sprite pixel is on and display pixel is on, set carry flag
-                if (sprite_bit && pixel) vm->v[0x0F] = 1;
+                if (sprite_bit && *pixel) vm->v[0x0F] = 1;
 
                 // xor display pixel with sprite pixel to set it on/off
                 *pixel ^= sprite_bit;
@@ -650,6 +723,17 @@ void run_instruction(vm_t *vm) {
             if (++y >= HEIGHT) break;
         }
         break;
+    }
+
+    case 0xE:
+        if (vm->ins.nn == 0x9E) {
+            // EX9E: Skips the next instruction if the key stored in VX is pressed.
+            if (vm->keypad[vm->v[vm->ins.x]]) vm->pc += 2;
+        } else if (vm->ins.nn == 0xA1) {
+            // EXA1: Skips the next instruction if the key stored in VX is not pressed.
+            if (!vm->keypad[vm->v[vm->ins.x]]) vm->pc += 2;
+        }
+        break;
 
     case 0xF:
         switch (vm->ins.nn) {
@@ -660,6 +744,18 @@ void run_instruction(vm_t *vm) {
 
         case 0x0A:
             // FX0A: A key press is awaited, and then stored in VX (blocking operation, all instruction halted until next key event).
+            bool key_pressed = false;
+            for (uint8_t i = 0; i < sizeof vm->keypad; i++) {
+                if (vm->keypad[i]) {
+                    vm->v[vm->ins.x] = i;
+                    key_pressed      = true;
+                    break;
+                }
+            }
+
+            // keep running this instruction until a key is pressed (infinite loop)
+            if (!key_pressed) vm->pc -= 2;
+
             break;
 
         case 0x15:
@@ -679,12 +775,10 @@ void run_instruction(vm_t *vm) {
 
         case 0x29:
             // FX29: Sets I to the location of the sprite for the character in VX. Characters 0-F (in hexadecimal) are represented by a 4x5 font.
-            const uint8_t ch = vm->v[vm->ins.x] & 0x0F; // take only the last nibble
-            // const uint8_t ch = vm->v[vm->ins.x];
-            vm->i = vm->ram[ch * 5];
+            vm->i = vm->v[vm->ins.x] * 5;
             break;
 
-        case 0x33:
+        case 0x33: {
             // FX33: Stores the binary-coded decimal representation of VX, with the hundreds digit
             // in memory at location in I, tens digit at I+1, and ones digit at I+2.
             const uint8_t x    = vm->v[vm->ins.x];
@@ -692,6 +786,7 @@ void run_instruction(vm_t *vm) {
             vm->ram[vm->i + 1] = x % 100 / 10; // tens
             vm->ram[vm->i + 2] = x % 10;       // digit
             break;
+        }
 
         case 0x55:
             // FX55: Stores from V0 to VX (including VX) in memory, starting at address I. The
@@ -746,11 +841,22 @@ int main(int argc, char **argv) {
 
         if (vm.state == PAUSED) continue;
 
-        run_instruction(&vm);
+        const uint64_t start = SDL_GetPerformanceCounter();
 
-        // SDL_Delay(16); // delay for ~60hz/60fps
+        for (uint32_t i = 0; i < config.clock_rate / 60; i++) {
+            run_instruction(&vm);
+        }
+
+        const uint64_t now = SDL_GetPerformanceCounter();
+
+        const double time_elapsed = (double)((now - start) / 1000) / SDL_GetPerformanceFrequency();
+
+        // delay for ~60hz/60fps or actual time elapsed
+        SDL_Delay(16.67f > time_elapsed ? 16.67f - time_elapsed : 0);
 
         update_screen(sdl, config, &vm);
+
+        update_timers(&vm);
     }
 
     // final cleanup
