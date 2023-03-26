@@ -21,6 +21,7 @@ typedef struct {
     uint32_t fg_color;
     uint32_t bg_color;
     uint16_t scale_factor;
+    bool pixel_border;
 } config_t;
 
 typedef enum {
@@ -54,7 +55,6 @@ typedef struct {
     bool keypad[16];       // hexadecimal keyboard
     const char *rom_name;  // currently running rom
     instruction_t ins;     // currently executing instruction
-
 } vm_t;
 
 bool init_sdl(sdl_t *sdl, const config_t config) {
@@ -139,6 +139,8 @@ bool init_vm(vm_t *vm, const char *rom_name) {
         return false;
     };
 
+    // vm->ram[0x1FF] = 2; // set magic number to run test #2 directly
+
     fclose(rom);
 
     // defaults
@@ -158,6 +160,7 @@ bool set_config_from_args(config_t *config, const int argc, char **argv) {
         .fg_color      = 0x0FEEEEFF,
         .bg_color      = 0x020022FF,
         .scale_factor  = 20,
+        .pixel_border  = false,
     };
 
     // overrides
@@ -180,6 +183,11 @@ void clear_screen(const sdl_t sdl, const config_t config) {
 
 void update_screen(const sdl_t sdl, const config_t config, const vm_t *vm) {
     SDL_Rect rect = {.x = 0, .y = 0, .w = config.scale_factor, .h = config.scale_factor};
+
+    if (config.pixel_border) {
+        rect.w -= 2;
+        rect.h -= 2;
+    }
 
     const uint8_t fg_r = config.fg_color >> 24;
     const uint8_t fg_g = config.fg_color >> 16;
@@ -251,30 +259,45 @@ void handle_input(vm_t *vm) {
 
 #ifdef DEBUG
 void print_debug_info(vm_t *vm) {
-    printf("Address: 0x%04X, op: 0x%04X, desc: ", vm->pc - 2, vm->ins.opcode);
+    printf("addr: 0x%04X, op: 0x%04X, desc: ", vm->pc - 2, vm->ins.opcode);
 
     switch ((vm->ins.opcode >> 12) & 0x0F) {
     case 0x0:
         if (vm->ins.nn == 0xE0) {
             // 00E0: Clears the screen.
             printf("Clear screen\n");
-
         } else if (vm->ins.nn == 0xEE) {
-            // 0x00EE: Return from subroutine
+            // 00EE: Return from subroutine
             printf("Return from subroutine to address 0x%04X\n", *(vm->stack_ptr - 1));
         } else {
-            printf("Unimplemented opcode.\n");
+            // 0NNN: Calls machine code routine (RCA 1802 for COSMAC VIP) at address NNN.
+            printf("Call machine code routine at address 0x%03X\n", vm->ins.nnn);
         }
         break;
 
     case 0x1:
         // 1NNN: Jump to address NNN
-        printf("Jump to address NNN (0x%04X)\n", vm->ins.nnn);
+        printf("Jump to address NNN (0x%03X)\n", vm->ins.nnn);
         break;
 
     case 0x2:
         // 2NNN: Call subroutine at NNN
-        printf("Call subroutine at NNN (0x%04X)\n", vm->ins.nnn);
+        printf("Call subroutine at NNN (0x%03X)\n", vm->ins.nnn);
+        break;
+
+    case 0x3:
+        // 3XNN: Skips the next instruction if VX equals NN.
+        printf("Skip the next instruction if V%u (0x%02X) == NN (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.nn);
+        break;
+
+    case 0x4:
+        // 4XNN: Skips the next instruction if VX does not equal NN.
+        printf("Skip the next instruction if V%u (0x%02X) != NN (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.nn);
+        break;
+
+    case 0x5:
+        // 5XY0: Skips the next instruction if VX equals YY.
+        printf("Skip the next instruction if V%u (0x%02X) == V%u (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y]);
         break;
 
     case 0x6:
@@ -286,6 +309,58 @@ void print_debug_info(vm_t *vm) {
         printf("Add NN (0x%02X) to V%d\n", vm->ins.nn, vm->ins.x);
         break;
         // 7XNN: Adds NN to VX (carry flag is not changed).
+
+    case 0x8:
+        switch (vm->ins.n) {
+        case 0x0:
+            // 8XY0: Sets VX to the value of VY.
+            printf("Set V%d (0x%02X) = V%d (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y]);
+            break;
+
+        case 0x1:
+            // 8XY1: Sets VX to VX or VY. (bitwise OR operation)
+            printf("Set V%d (0x%02X) |= V%d (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y]);
+            break;
+
+        case 0x2:
+            // 8XY2: Sets VX to VX and VY. (bitwise AND operation)
+            printf("Set V%d (0x%02X) &= V%d (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y]);
+            break;
+
+        case 0x3:
+            // 8XY3: Sets VX to VX xor VY.
+            printf("Set V%d (0x%02X) ^= V%d (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y]);
+            break;
+
+        case 0x4:
+            // 8XY4: Adds VY to VX. VF is set to 1 when there's a carry, and to 0 when there is not.
+            printf("Set V%d (0x%02X) += V%d (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y]);
+            break;
+
+        case 0x5:
+            // 8XY5: VY is subtracted from VX. VF is set to 0 when there's a borrow, and 1 when there is not.
+            printf("Set V%d (0x%02X) -= V%d (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y]);
+            break;
+
+        case 0x6:
+            // 8XY6 Stores the least significant bit of VX in VF and then shifts VX to the right by 1.
+            printf("Set V%d (0x%02X) >>= 1 and VF to (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->v[vm->ins.x] & 1);
+            break;
+
+        case 0x7:
+            // 8XY7: Sets VX to VY minus VX. VF is set to 0 when there's a borrow, and 1 when there is not.
+            printf("Set V%d (0x%02X) = V%d (0x%02X) - V%d\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.x, vm->ins.y, vm->v[vm->ins.y]);
+            break;
+
+        case 0xE:
+            // 8XYE: Stores the most significant bit of VX in VF and then shifts VX to the left by 1.
+            printf("Set V%d (0x%02X) <<= 1 and VF to (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->v[vm->ins.x] & 0x80);
+            break;
+
+        default:
+            break; // unimplemented
+        }
+        break;
 
     case 0xA:
         // ANNN: Sets I to the address NNN.
@@ -330,13 +405,42 @@ void run_instruction(vm_t *vm) {
         } else if (vm->ins.nn == 0xEE) {
             // 00EE: Returns from a subroutine.
             vm->pc = *(--vm->stack_ptr); // grab last address from subroutine stack (pop)
+        } else {
+            // 0NNN: Calls machine code routine (RCA 1802 for COSMAC VIP) at address NNN.
+            vm->pc = vm->ins.nnn;
         }
+        break;
+
+    case 0x1:
+        // 1NNN: Jumps to address NNN.
+        vm->pc = vm->ins.nnn;
         break;
 
     case 0x2:
         // 2NNN: Calls machine code routine at address NNN.
-        *vm->stack_ptr++ = vm->pc;      // store current address to return to on stac (push)
+        *vm->stack_ptr++ = vm->pc;      // store current address to return to on stacc (push)
         vm->pc           = vm->ins.nnn; // set program counter to subroutine address, so next opcode is gotten from there
+        break;
+
+    case 0x3:
+        // 3XNN: Skips the next instruction if VX equals NN.
+        if (vm->v[vm->ins.x] == vm->ins.nn) {
+            vm->pc += 2;
+        }
+        break;
+
+    case 0x4:
+        // 4XNN: Skips the next instruction if VX does not equal NN.
+        if (vm->v[vm->ins.x] != vm->ins.nn) {
+            vm->pc += 2;
+        }
+        break;
+
+    case 0x5:
+        // 5XY0: Skips the next instruction if VX equals VY.
+        if (vm->v[vm->ins.x] == vm->v[vm->ins.y]) {
+            vm->pc += 2;
+        }
         break;
 
     case 0x6:
@@ -347,6 +451,64 @@ void run_instruction(vm_t *vm) {
     case 0x7:
         // 7XNN: Adds NN to VX (carry flag is not changed).
         vm->v[vm->ins.x] += vm->ins.nn;
+        break;
+
+    case 0x8:
+        switch (vm->ins.n) {
+        case 0x0:
+            // 8XY0: Sets VX to the value of VY.
+            vm->v[vm->ins.x] = vm->v[vm->ins.y];
+            break;
+
+        case 0x1:
+            // 8XY1: Sets VX to VX or VY. (bitwise OR operation)
+            vm->v[vm->ins.x] |= vm->v[vm->ins.y];
+            break;
+
+        case 0x2:
+            // 8XY2: Sets VX to VX and VY. (bitwise AND operation)
+            vm->v[vm->ins.x] &= vm->v[vm->ins.y];
+            break;
+
+        case 0x3:
+            // 8XY3: Sets VX to VX xor VY.
+            vm->v[vm->ins.x] ^= vm->v[vm->ins.y];
+            break;
+
+        case 0x4:
+            // 8XY4: Adds VY to VX. VF is set to 1 when there's a carry, and to 0 when there is not.
+            const uint8_t ogx = vm->v[vm->ins.x];
+            vm->v[vm->ins.x] += vm->v[vm->ins.y];
+            vm->v[0xF] = ogx < vm->v[vm->ins.x];
+            break;
+
+        case 0x5:
+            // 8XY5: VY is subtracted from VX. VF is set to 0 when there's a borrow, and 1 when there is not.
+            vm->v[0xF] = vm->v[vm->ins.x] > vm->v[vm->ins.y];
+            vm->v[vm->ins.x] -= vm->v[vm->ins.y];
+            break;
+
+        case 0x6:
+            // 8XY6 Stores the least significant bit of VX in VF and then shifts VX to the right by 1.
+            vm->v[0xF] = vm->v[vm->ins.x] & 0x1;
+            vm->v[vm->ins.x] >>= 1;
+            break;
+
+        case 0x7:
+            // 8XY7: Sets VX to VY minus VX. VF is set to 0 when there's a borrow, and 1 when there is not.
+            vm->v[0xF]       = vm->v[vm->ins.y] > vm->v[vm->ins.x];
+            vm->v[vm->ins.x] = vm->v[vm->ins.y] - vm->v[vm->ins.x];
+            break;
+
+        case 0xE:
+            // 8XYE: Stores the most significant bit of VX in VF and then shifts VX to the left by 1.
+            vm->v[0xF] = vm->v[vm->ins.x] & 0x80;
+            vm->v[vm->ins.x] <<= 1;
+            break;
+
+        default:
+            break; // unimplented
+        }
         break;
 
     case 0xA:
@@ -386,14 +548,65 @@ void run_instruction(vm_t *vm) {
                 // xor display pixel with sprite pixel to set it on/off
                 *pixel ^= sprite_bit;
 
-                // stop drawing if hit right screen edge
+                // stop drawing if we hit right screen edge
                 if (++x >= WIDTH) break;
             }
 
-            // stop drawing the entire sprite if hit bottom screen edge
+            // stop drawing the entire sprite if we hit bottom screen edge
             if (++y >= HEIGHT) break;
         }
+        break;
 
+    case 0xF:
+        switch (vm->ins.nn) {
+        case 0x07: // FX07:	Timer	Vx = get_delay()	Sets VX to the value of the delay timer.
+            break;
+        case 0x0A: // FX0A:	KeyOp	Vx = get_key()	A key press is awaited, and then stored in VX (blocking operation, all instruction halted until next key event).
+            break;
+        case 0x15: // FX15:	Timer	delay_timer(Vx)	Sets the delay timer to VX.
+            break;
+        case 0x18: // FX18:	Sound	sound_timer(Vx)	Sets the sound timer to VX.
+            break;
+
+        case 0x1E:
+            // FX1E: Adds VX to I. VF is not affected.
+            vm->i += vm->v[vm->ins.x];
+            break;
+
+        case 0x29:
+            // FX29: Sets I to the location of the sprite for the character in VX. Characters 0-F (in hexadecimal) are represented by a 4x5 font.
+            const uint8_t ch = vm->v[vm->ins.x] & 0x0F;
+            vm->i            = vm->ram[ch * 5];
+            break;
+
+        case 0x33:
+            // FX33: Stores the binary-coded decimal representation of VX, with the hundreds digit
+            // in memory at location in I, tens digit at I+1, and ones digit at I+2.
+            const uint8_t x    = vm->v[vm->ins.x];
+            vm->ram[vm->i]     = x / 100;      // hundreds
+            vm->ram[vm->i + 1] = x % 100 / 10; // tens
+            vm->ram[vm->i + 2] = x % 10;       // digit
+            break;
+
+        case 0x55:
+            // FX55: Stores from V0 to VX (including VX) in memory, starting at address I. The
+            // offset from I is increased by 1 for each value written, but I is left unmodified.
+            for (uint8_t i = 0; i <= vm->ins.x; i++) {
+                vm->ram[vm->i + i] = vm->v[i];
+            }
+            break;
+
+        case 0x65:
+            // FX65: Fills from V0 to VX (including VX) with values from memory starting at addr I.
+            // The offset from I is increased by 1 for each value read, but I is left unmodified.
+            for (uint8_t i = 0; i <= vm->ins.x; i++) {
+                vm->v[i] = vm->ram[vm->i + i];
+            }
+            break;
+
+        default:
+            break; // unimplemented
+        }
         break;
 
     default:
