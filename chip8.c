@@ -139,7 +139,7 @@ bool init_vm(vm_t *vm, const char *rom_name) {
         return false;
     };
 
-    // vm->ram[0x1FF] = 2; // set magic number to run test #2 directly
+    vm->ram[0x1FF] = 2; // set magic number to run test #2 directly
 
     fclose(rom);
 
@@ -362,15 +362,85 @@ void print_debug_info(vm_t *vm) {
         }
         break;
 
+    case 0x9:
+        // 9XY0: Skips the next instruction if VX does not equal YY.
+        printf("Skip the next instruction if V%u (0x%02X) != V%u (0x%02X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y]);
+        break;
+
     case 0xA:
         // ANNN: Sets I to the address NNN.
         printf("Set I to NNN (0x%04X)\n", vm->ins.nnn);
+        break;
+
+    case 0xB:
+        // BNNN: Jumps to the address NNN plus V0.
+        printf("Jump to NNN (0x%04X) + V0 (0x%04X)\n", vm->ins.nnn, vm->v[0]);
+        break;
+
+    case 0xC:
+        // CXNN: Sets VX to the result of a bitwise and operation on a random number (Typically: 0 to 255) and NN.
+        printf("Set V%d (0x%04X) = rand() & NN (0x%04X)\n", vm->ins.x, vm->v[vm->ins.x], vm->ins.nn);
         break;
 
     case 0xD:
         // DXYN: Draws a sprite at coordinate (VX, VY)
         printf("Draw N (%u) height sprite at coordinate V%X: %u V%X: %u from memory location I (0x%X)\n",
                vm->ins.n, vm->ins.x, vm->v[vm->ins.x], vm->ins.y, vm->v[vm->ins.y], vm->i);
+        break;
+
+    case 0xF:
+        switch (vm->ins.nn) {
+        case 0x07:
+            // FX07: Sets VX to the value of the delay timer.
+            printf("Set V%d (0x%02X) to value of delay timer (0x%04X)\n", vm->ins.x, vm->v[vm->ins.x], vm->delay_timer);
+            break;
+
+        case 0x0A:
+            // FX0A: A key press is awaited, and then stored in VX (blocking operation, all instruction halted until next key event).
+            printf("wait for key press, not imlepmented");
+            break;
+
+        case 0x15:
+            // FX15: Sets the delay timer to VX.
+            printf("Set delay timer (0x%04X) to V%d (0x%02X)\n", vm->delay_timer, vm->ins.x, vm->v[vm->ins.x]);
+            break;
+
+        case 0x18:
+            // FX18: Sets the sound timer to VX.
+            printf("Set sound timer (0x%04X) to V%d (0x%02X)\n", vm->sound_timer, vm->ins.x, vm->v[vm->ins.x]);
+            break;
+
+        case 0x1E:
+            // FX1E: Adds VX to I. VF is not affected.
+            printf("Set I += V%d (0x%04X) \n", vm->ins.x, vm->v[vm->ins.x]);
+            break;
+
+        case 0x29:
+            // FX29: Sets I to the location of the sprite for the character in VX. Characters 0-F (in hexadecimal) are represented by a 4x5 font.
+            printf("Set I to the location of the sprite for the character in V%d (0x%04X) \n", vm->ins.x, vm->v[vm->ins.x]);
+            break;
+
+        case 0x33:
+            // FX33: Stores the binary-coded decimal representation of VX, with the hundreds digit
+            // in memory at location in I, tens digit at I+1, and ones digit at I+2.
+            printf("Store the binary-coded decimal representation of V%d (0x%04X) in memory\n", vm->ins.x, vm->v[vm->ins.x]);
+            break;
+
+        case 0x55:
+            // FX55: Stores from V0 to VX (including VX) in memory, starting at address I. The
+            // offset from I is increased by 1 for each value written, but I is left unmodified.
+            printf("Store from V0 to V%d (0x%04X) in memory, starting at address I (0x%04X)\n", vm->ins.x, vm->v[vm->ins.x], vm->i);
+            break;
+
+        case 0x65:
+            // FX65: Fills from V0 to VX (including VX) with values from memory starting at addr I.
+            // The offset from I is increased by 1 for each value read, but I is left unmodified.
+            printf("Fill from V0 to V%d (0x%04X) with values from memory, starting at address I (0x%04X)\n", vm->ins.x, vm->v[vm->ins.x], vm->i);
+            break;
+
+        default:
+            break; // unimplemented
+        }
         break;
 
     default:
@@ -511,9 +581,26 @@ void run_instruction(vm_t *vm) {
         }
         break;
 
+    case 0x9:
+        // 9XY0: Skips the next instruction if VX does not equal VY.
+        if (vm->v[vm->ins.x] != vm->v[vm->ins.y]) {
+            vm->pc += 2;
+        }
+        break;
+
     case 0xA:
         // ANNN: Sets I to the address NNN.
         vm->i = vm->ins.nnn;
+        break;
+
+    case 0xB:
+        // BNNN: Jumps to the address NNN plus V0.
+        vm->pc = vm->ins.nnn + vm->v[0];
+        break;
+
+    case 0xC:
+        // CXNN: Sets VX to the result of a bitwise and operation on a random number (Typically: 0 to 255) and NN.
+        vm->v[vm->ins.x] = rand() & vm->ins.nn & 0xFF;
         break;
 
     case 0xD:
@@ -559,13 +646,23 @@ void run_instruction(vm_t *vm) {
 
     case 0xF:
         switch (vm->ins.nn) {
-        case 0x07: // FX07:	Timer	Vx = get_delay()	Sets VX to the value of the delay timer.
+        case 0x07:
+            // FX07: Sets VX to the value of the delay timer.
+            vm->v[vm->ins.x] = vm->delay_timer;
             break;
-        case 0x0A: // FX0A:	KeyOp	Vx = get_key()	A key press is awaited, and then stored in VX (blocking operation, all instruction halted until next key event).
+
+        case 0x0A:
+            // FX0A: A key press is awaited, and then stored in VX (blocking operation, all instruction halted until next key event).
             break;
-        case 0x15: // FX15:	Timer	delay_timer(Vx)	Sets the delay timer to VX.
+
+        case 0x15:
+            // FX15: Sets the delay timer to VX.
+            vm->delay_timer = vm->v[vm->ins.x];
             break;
-        case 0x18: // FX18:	Sound	sound_timer(Vx)	Sets the sound timer to VX.
+
+        case 0x18:
+            // FX18: Sets the sound timer to VX.
+            vm->sound_timer = vm->v[vm->ins.x];
             break;
 
         case 0x1E:
@@ -575,8 +672,9 @@ void run_instruction(vm_t *vm) {
 
         case 0x29:
             // FX29: Sets I to the location of the sprite for the character in VX. Characters 0-F (in hexadecimal) are represented by a 4x5 font.
-            const uint8_t ch = vm->v[vm->ins.x] & 0x0F;
-            vm->i            = vm->ram[ch * 5];
+            const uint8_t ch = vm->v[vm->ins.x] & 0x0F; // take only the last nibble
+            // const uint8_t ch = vm->v[vm->ins.x];
+            vm->i = vm->ram[ch * 5];
             break;
 
         case 0x33:
