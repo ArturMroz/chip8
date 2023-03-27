@@ -13,16 +13,22 @@
 typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
+    SDL_AudioSpec want;
+    SDL_AudioSpec have;
+    SDL_AudioDeviceID dev;
 } sdl_t;
 
 typedef struct {
-    uint16_t window_width;  // emulation window width
-    uint16_t window_height; // emulation window height
-    uint32_t fg_color;      // foreground colour
-    uint32_t bg_color;      // background colour
-    uint16_t scale_factor;  // scale factor aka how thicc are pixels
-    bool pixel_border;      // draw pixel outlines
-    uint32_t clock_rate;    // number of instructions per second
+    uint16_t window_width;      // emulation window width
+    uint16_t window_height;     // emulation window height
+    uint32_t fg_color;          // foreground colour
+    uint32_t bg_color;          // background colour
+    uint16_t scale_factor;      // scale factor aka how thicc are pixels
+    bool pixel_border;          // draw pixel outlines
+    uint32_t clock_rate;        // number of instructions per second
+    uint32_t square_wave_freq;  // frequency of squar wave sound (ie 440hz for A)
+    uint32_t audio_sample_rate; //
+    int16_t volume;             // how loud is the sound
 } config_t;
 
 typedef enum {
@@ -42,6 +48,7 @@ typedef struct {
 
 } instruction_t;
 
+// Chip-8 Virtual Machine
 typedef struct {
     emulator_state_t state;
     uint8_t ram[4096];     // memory
@@ -58,7 +65,24 @@ typedef struct {
     instruction_t ins;     // currently executing instruction
 } vm_t;
 
-bool init_sdl(sdl_t *sdl, const config_t config) {
+void audio_callback(void *userdata, uint8_t *stream, int len) {
+    const config_t *config = (config_t *)userdata;
+    int16_t *audio_data    = (int16_t *)stream;
+
+    static uint32_t running_sample_index  = 0;
+    const int32_t square_wave_period      = config->audio_sample_rate / config->square_wave_freq;
+    const int32_t half_square_wave_period = square_wave_period / 2;
+
+    // fill out 2 bytes at a time (int16_t), len is in bytes so divide by 2
+    for (int i = 0; i < len / 2; i++) {
+        audio_data[i] =
+            ((running_sample_index++ / half_square_wave_period) % 2)
+                ? config->volume
+                : -config->volume;
+    }
+}
+
+bool init_sdl(sdl_t *sdl, config_t *config) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER) != 0) {
         SDL_Log("Failed to init SDL: %s\n", SDL_GetError());
         return false;
@@ -68,8 +92,8 @@ bool init_sdl(sdl_t *sdl, const config_t config) {
         "Chip8 Emulator",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
-        config.window_width * config.scale_factor,
-        config.window_height * config.scale_factor,
+        config->window_width * config->scale_factor,
+        config->window_height * config->scale_factor,
         SDL_WINDOW_OPENGL);
 
     if (!sdl->window) {
@@ -83,12 +107,35 @@ bool init_sdl(sdl_t *sdl, const config_t config) {
         return false;
     }
 
+    // init audio
+    sdl->want = (SDL_AudioSpec){
+        .freq     = 44100,        // 44_100hz, CD quality
+        .format   = AUDIO_S16LSB, // little endian signed 16 bits
+        .channels = 1,            // mono, party like it's 1979
+        .samples  = 512,
+        .callback = audio_callback,
+        .userdata = config,
+    };
+
+    sdl->dev = SDL_OpenAudioDevice(NULL, 0, &sdl->want, &sdl->have, 0);
+
+    if (sdl->dev == 0) {
+        SDL_Log("Failed to get an Audio Device: %s\n", SDL_GetError());
+        return false;
+    }
+
+    if (sdl->want.format != sdl->have.format || sdl->want.channels != sdl->have.channels) {
+        SDL_Log("Failed to get desired Audio Spec.\n");
+        return false;
+    }
+
     return true;
 }
 
 void deinit_sdl(sdl_t sdl) {
     SDL_DestroyRenderer(sdl.renderer);
     SDL_DestroyWindow(sdl.window);
+    SDL_CloseAudioDevice(sdl.dev);
     SDL_Quit();
 }
 
@@ -154,13 +201,16 @@ bool init_vm(vm_t *vm, const char *rom_name) {
 bool set_config_from_args(config_t *config, const int argc, char **argv) {
     // defaults
     *config = (config_t){
-        .window_width  = 64,
-        .window_height = 32,
-        .fg_color      = 0x0FEEEEFF,
-        .bg_color      = 0x020022FF,
-        .scale_factor  = 20,
-        .pixel_border  = false,
-        .clock_rate    = 700,
+        .window_width      = 64,
+        .window_height     = 32,
+        .fg_color          = 0x0FEEEEFF, // cyan
+        .bg_color          = 0x020022FF, // dark blue
+        .scale_factor      = 20,         // chonky pixels
+        .pixel_border      = false,      // draw pixel outlines
+        .clock_rate        = 700,        // instructions per second
+        .square_wave_freq  = 440,        // 440hz for middle A
+        .audio_sample_rate = 44100,      // CD quality, 44100hz
+        .volume            = 30000,      // INT16_MAX is max volume
     };
 
     // overrides
@@ -218,14 +268,16 @@ void update_screen(const sdl_t sdl, const config_t config, const vm_t *vm) {
     SDL_RenderPresent(sdl.renderer);
 }
 
-void update_timers(vm_t *vm) {
+void update_timers(const sdl_t sdl, vm_t *vm) {
     if (vm->delay_timer > 0) vm->delay_timer--;
 
     if (vm->sound_timer > 0) {
-        // TODO start playing sound
+        // start playing sound
         vm->sound_timer--;
+        SDL_PauseAudioDevice(sdl.dev, 0);
     } else {
-        // TODO stop playing sound
+        // stop playing sound
+        SDL_PauseAudioDevice(sdl.dev, 1);
     }
 }
 
@@ -563,29 +615,23 @@ void run_instruction(vm_t *vm) {
 
     case 0x2:
         // 2NNN: Calls machine code routine at address NNN.
-        *vm->stack_ptr++ = vm->pc;      // store current address to return to on stacc (push)
+        *vm->stack_ptr++ = vm->pc;      // store current address to return to on the stacc (push)
         vm->pc           = vm->ins.nnn; // set program counter to subroutine address, so next opcode is gotten from there
         break;
 
     case 0x3:
         // 3XNN: Skips the next instruction if VX equals NN.
-        if (vm->v[vm->ins.x] == vm->ins.nn) {
-            vm->pc += 2;
-        }
+        if (vm->v[vm->ins.x] == vm->ins.nn) vm->pc += 2;
         break;
 
     case 0x4:
         // 4XNN: Skips the next instruction if VX does not equal NN.
-        if (vm->v[vm->ins.x] != vm->ins.nn) {
-            vm->pc += 2;
-        }
+        if (vm->v[vm->ins.x] != vm->ins.nn) vm->pc += 2;
         break;
 
     case 0x5:
         // 5XY0: Skips the next instruction if VX equals VY.
-        if (vm->v[vm->ins.x] == vm->v[vm->ins.y]) {
-            vm->pc += 2;
-        }
+        if (vm->v[vm->ins.x] == vm->v[vm->ins.y]) vm->pc += 2;
         break;
 
     case 0x6:
@@ -691,11 +737,10 @@ void run_instruction(vm_t *vm) {
         // drawn, and to 0 if that does not happen (this is used for collision detection).
 
         // wrap around the edges of the screen
-        // using '&' instead of 'modulo' as x % y == x & (y - 1) when y is a power of 2
-        uint8_t x = vm->v[vm->ins.x] & (WIDTH - 1);
-        uint8_t y = vm->v[vm->ins.y] & (HEIGHT - 1);
+        uint8_t x = vm->v[vm->ins.x] % WIDTH;
+        uint8_t y = vm->v[vm->ins.y] % HEIGHT;
 
-        const uint8_t og_x = x;
+        const uint8_t og_x = x; // original x, needed at the start of every new row
 
         vm->v[0x0F] = 0; // init carry flag to 0
 
@@ -703,7 +748,7 @@ void run_instruction(vm_t *vm) {
         for (uint8_t i = 0; i < vm->ins.n; i++) {
             const uint8_t sprite_data = vm->ram[vm->i + i]; // next byte/row of sprite data
 
-            x = og_x; // reset x for next row to draw
+            x = og_x; // reset x for the next row to draw
 
             for (int8_t j = 7; j >= 0; j--) {
                 const bool sprite_bit = (sprite_data & (1 << j));
@@ -826,7 +871,7 @@ int main(int argc, char **argv) {
 
     // init SDL
     sdl_t sdl = {0};
-    if (!init_sdl(&sdl, config)) exit(EXIT_FAILURE);
+    if (!init_sdl(&sdl, &config)) exit(EXIT_FAILURE);
 
     // init chip8 vm
     vm_t vm              = {0};
@@ -849,14 +894,14 @@ int main(int argc, char **argv) {
 
         const uint64_t now = SDL_GetPerformanceCounter();
 
-        const double time_elapsed = (double)((now - start) / 1000) / SDL_GetPerformanceFrequency();
+        const double time_elapsed = (double)((now - start) * 1000) / SDL_GetPerformanceFrequency();
 
         // delay for ~60hz/60fps or actual time elapsed
         SDL_Delay(16.67f > time_elapsed ? 16.67f - time_elapsed : 0);
 
         update_screen(sdl, config, &vm);
 
-        update_timers(&vm);
+        update_timers(sdl, &vm);
     }
 
     // final cleanup
