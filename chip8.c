@@ -63,6 +63,7 @@ typedef struct {
     bool keypad[16];       // hexadecimal keyboard
     const char *rom_name;  // currently running rom
     instruction_t ins;     // currently executing instruction
+    bool should_redraw;    // redraw the screen
 } vm_t;
 
 void audio_callback(void *userdata, uint8_t *stream, int len) {
@@ -161,6 +162,9 @@ bool init_vm(vm_t *vm, const char *rom_name) {
         0xF0, 0x80, 0xF0, 0x80, 0x80, // F
     };
 
+    // reset the entire chip8 vm
+    memset(vm, 0, sizeof(vm_t));
+
     // load font
     memcpy(&vm->ram[0], font, sizeof(font));
 
@@ -210,7 +214,7 @@ bool set_config_from_args(config_t *config, const int argc, char **argv) {
         .clock_rate        = 700,        // instructions per second
         .square_wave_freq  = 440,        // 440hz for middle A
         .audio_sample_rate = 44100,      // CD quality, 44100hz
-        .volume            = 30000,      // INT16_MAX is max volume
+        .volume            = 20000,      // INT16_MAX is max volume
     };
 
     // overrides
@@ -281,7 +285,7 @@ void update_timers(const sdl_t sdl, vm_t *vm) {
     }
 }
 
-void handle_input(vm_t *vm) {
+void handle_input(vm_t *vm, config_t *config) {
     // chip8 keypad | qwerty | colemak
     // 123C         | 1234   | 1234
     // 456D         | qwer   | qwfp
@@ -294,15 +298,15 @@ void handle_input(vm_t *vm) {
         switch (event.type) {
         case SDL_QUIT:
             vm->state = QUIT;
-            return;
+            break;
 
         case SDL_KEYDOWN:
-            switch (event.key.keysym.sym) {
-            case SDLK_ESCAPE:
+            switch (event.key.keysym.scancode) {
+            case SDL_SCANCODE_ESCAPE:
                 vm->state = QUIT;
-                return;
+                break;
 
-            case SDLK_SPACE:
+            case SDL_SCANCODE_SPACE:
                 if (vm->state == RUNNING) {
                     vm->state = PAUSED;
                     puts("= PAUSED =");
@@ -310,27 +314,39 @@ void handle_input(vm_t *vm) {
                     vm->state = RUNNING;
                     puts("= RESUMED =");
                 }
-                return;
+                break;
 
-            case SDLK_1: vm->keypad[0x1] = true; break;
-            case SDLK_2: vm->keypad[0x2] = true; break;
-            case SDLK_3: vm->keypad[0x3] = true; break;
-            case SDLK_4: vm->keypad[0xC] = true; break;
+            case SDL_SCANCODE_BACKSPACE:
+                init_vm(vm, vm->rom_name);
+                break;
 
-            case SDLK_q: vm->keypad[0x4] = true; break;
-            case SDLK_w: vm->keypad[0x5] = true; break;
-            case SDLK_e: vm->keypad[0x6] = true; break;
-            case SDLK_r: vm->keypad[0xD] = true; break;
+            case SDL_SCANCODE_EQUALS:
+                if (config->volume < INT16_MAX) config->volume += 1000;
+                break;
 
-            case SDLK_a: vm->keypad[0x7] = true; break;
-            case SDLK_s: vm->keypad[0x8] = true; break;
-            case SDLK_d: vm->keypad[0x9] = true; break;
-            case SDLK_f: vm->keypad[0xE] = true; break;
+            case SDL_SCANCODE_MINUS:
+                if (config->volume > 0) config->volume -= 1000;
+                break;
 
-            case SDLK_z: vm->keypad[0xA] = true; break;
-            case SDLK_x: vm->keypad[0x0] = true; break;
-            case SDLK_c: vm->keypad[0xB] = true; break;
-            case SDLK_v: vm->keypad[0xF] = true; break;
+            case SDL_SCANCODE_1: vm->keypad[0x1] = true; break;
+            case SDL_SCANCODE_2: vm->keypad[0x2] = true; break;
+            case SDL_SCANCODE_3: vm->keypad[0x3] = true; break;
+            case SDL_SCANCODE_4: vm->keypad[0xC] = true; break;
+
+            case SDL_SCANCODE_Q: vm->keypad[0x4] = true; break;
+            case SDL_SCANCODE_W: vm->keypad[0x5] = true; break;
+            case SDL_SCANCODE_E: vm->keypad[0x6] = true; break;
+            case SDL_SCANCODE_R: vm->keypad[0xD] = true; break;
+
+            case SDL_SCANCODE_A: vm->keypad[0x7] = true; break;
+            case SDL_SCANCODE_S: vm->keypad[0x8] = true; break;
+            case SDL_SCANCODE_D: vm->keypad[0x9] = true; break;
+            case SDL_SCANCODE_F: vm->keypad[0xE] = true; break;
+
+            case SDL_SCANCODE_Z: vm->keypad[0xA] = true; break;
+            case SDL_SCANCODE_X: vm->keypad[0x0] = true; break;
+            case SDL_SCANCODE_C: vm->keypad[0xB] = true; break;
+            case SDL_SCANCODE_V: vm->keypad[0xF] = true; break;
 
             default:
                 break;
@@ -599,6 +615,7 @@ void run_instruction(vm_t *vm) {
         if (vm->ins.nn == 0xE0) {
             // 00E0: Clears the screen.
             memset(&vm->display[0], false, sizeof vm->display);
+            vm->should_redraw = true; // will update the screen on next tick
         } else if (vm->ins.nn == 0xEE) {
             // 00EE: Returns from a subroutine.
             vm->pc = *(--vm->stack_ptr); // grab last address from subroutine stack (pop)
@@ -767,6 +784,7 @@ void run_instruction(vm_t *vm) {
             // stop drawing the entire sprite if we hit bottom screen edge
             if (++y >= HEIGHT) break;
         }
+        vm->should_redraw = true; // will update the screen on next tick
         break;
     }
 
@@ -882,7 +900,7 @@ int main(int argc, char **argv) {
 
     // main emulator loop
     while (vm.state != QUIT) {
-        handle_input(&vm);
+        handle_input(&vm, &config);
 
         if (vm.state == PAUSED) continue;
 
@@ -899,7 +917,10 @@ int main(int argc, char **argv) {
         // delay for ~60hz/60fps or actual time elapsed
         SDL_Delay(16.67f > time_elapsed ? 16.67f - time_elapsed : 0);
 
-        update_screen(sdl, config, &vm);
+        if (vm.should_redraw) {
+            update_screen(sdl, config, &vm);
+            vm.should_redraw = false;
+        }
 
         update_timers(sdl, &vm);
     }
