@@ -5,8 +5,6 @@
 
 #include "SDL.h"
 
-// #define DEBUG
-
 #define WIDTH  64 // 64 is the original chip8 width
 #define HEIGHT 32 // 32 is the original chip8 height
 
@@ -19,15 +17,13 @@ typedef struct {
 } sdl_t;
 
 typedef struct {
-    // uint16_t window_width;      // emulation window width
-    // uint16_t window_height;     // emulation window height
     uint32_t fg_color;          // foreground colour
     uint32_t bg_color;          // background colour
-    uint8_t scale_factor;       // scale factor aka how thicc are pixels
+    uint8_t scale_factor;       // scale factor aka pixel thiccness
     bool pixel_border;          // draw pixel outlines
     uint32_t clock_rate;        // number of instructions per second
     uint32_t square_wave_freq;  // frequency of squar wave sound (ie 440hz for A)
-    uint32_t audio_sample_rate; //
+    uint32_t audio_sample_rate; // sample rate
     int16_t volume;             // how loud is the sound
 } config_t;
 
@@ -38,14 +34,12 @@ typedef enum {
 } emulator_state_t;
 
 typedef struct {
-    uint16_t opcode;
-    // TOOD could use union here?
-    uint16_t nnn; // 12 bit address/constant
-    uint8_t nn;   // 8 bit constant
-    uint8_t n;    // 4 bit constant
-    uint8_t x;    // 4 bit register identifier
-    uint8_t y;    // 4 bit register identifier
-
+    uint16_t opcode; // 16bit op code
+    uint16_t nnn;    // 12 bit address/constant
+    uint8_t nn;      // 8 bit constant
+    uint8_t n;       // 4 bit constant
+    uint8_t x;       // 4 bit register identifier
+    uint8_t y;       // 4 bit register identifier
 } instruction_t;
 
 // Chip-8 Virtual Machine
@@ -113,7 +107,7 @@ bool init_sdl(sdl_t *sdl, config_t *config) {
         .freq     = 44100,        // 44_100hz, CD quality
         .format   = AUDIO_S16LSB, // little endian signed 16 bits
         .channels = 1,            // mono, party like it's 1979
-        .samples  = 512,
+        .samples  = 512,          // 512 samples are enough for quality boops and bleeps
         .callback = audio_callback,
         .userdata = config,
     };
@@ -602,8 +596,6 @@ void run_instruction(vm_t *vm) {
     vm->pc += 2;
 
     // fill out current instruction format
-    // TODO using bitfields could make this easier?
-    // TODO can just use local ins var instead of vm->ins?
     vm->ins.nnn = vm->ins.opcode & 0x0FFF;
     vm->ins.nn  = vm->ins.opcode & 0x0FF;
     vm->ins.n   = vm->ins.opcode & 0x0F;
