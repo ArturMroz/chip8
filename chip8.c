@@ -5,10 +5,10 @@
 
 #include "SDL.h"
 
-#define DEBUG
+// #define DEBUG
 
-#define WIDTH  64
-#define HEIGHT 32
+#define WIDTH  64 // 64 is the original chip8 width
+#define HEIGHT 32 // 32 is the original chip8 height
 
 typedef struct {
     SDL_Window *window;
@@ -19,11 +19,11 @@ typedef struct {
 } sdl_t;
 
 typedef struct {
-    uint16_t window_width;      // emulation window width
-    uint16_t window_height;     // emulation window height
+    // uint16_t window_width;      // emulation window width
+    // uint16_t window_height;     // emulation window height
     uint32_t fg_color;          // foreground colour
     uint32_t bg_color;          // background colour
-    uint16_t scale_factor;      // scale factor aka how thicc are pixels
+    uint8_t scale_factor;       // scale factor aka how thicc are pixels
     bool pixel_border;          // draw pixel outlines
     uint32_t clock_rate;        // number of instructions per second
     uint32_t square_wave_freq;  // frequency of squar wave sound (ie 440hz for A)
@@ -93,8 +93,8 @@ bool init_sdl(sdl_t *sdl, config_t *config) {
         "Chip8 Emulator",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
-        config->window_width * config->scale_factor,
-        config->window_height * config->scale_factor,
+        WIDTH * config->scale_factor,
+        HEIGHT * config->scale_factor,
         SDL_WINDOW_OPENGL);
 
     if (!sdl->window) {
@@ -130,7 +130,7 @@ bool init_sdl(sdl_t *sdl, config_t *config) {
         return false;
     }
 
-    return true;
+    return true; // great success
 }
 
 void deinit_sdl(sdl_t sdl) {
@@ -199,14 +199,12 @@ bool init_vm(vm_t *vm, const char *rom_name) {
     vm->rom_name  = rom_name;
     vm->stack_ptr = &vm->stack[0];
 
-    return true;
+    return true; // great success
 }
 
 bool set_config_from_args(config_t *config, const int argc, char **argv) {
     // defaults
     *config = (config_t){
-        .window_width      = 64,
-        .window_height     = 32,
         .fg_color          = 0x0FEEEEFF, // cyan
         .bg_color          = 0x020022FF, // dark blue
         .scale_factor      = 20,         // chonky pixels
@@ -218,11 +216,19 @@ bool set_config_from_args(config_t *config, const int argc, char **argv) {
     };
 
     // overrides
+    // note: we aren't validating arguments provided by user, full-on yolo mode
     for (int i = 1; i < argc; i++) {
-        (void)argv[i]; // shush unused vars warnings
+        if (strncmp(argv[i], "--scale-factor", strlen("--scale-factor")) == 0) {
+            i++;
+            config->scale_factor = (uint8_t)atoi(argv[i]);
+        }
+
+        if (strncmp(argv[i], "--border", strlen("--border")) == 0) {
+            config->pixel_border = true;
+        }
     }
 
-    return true;
+    return true; // great success
 }
 
 void clear_screen(const sdl_t sdl, const config_t config) {
@@ -263,7 +269,7 @@ void update_screen(const sdl_t sdl, const config_t config, const vm_t *vm) {
             SDL_SetRenderDrawColor(sdl.renderer, fg_r, fg_g, fg_b, fg_a);
             SDL_RenderFillRect(sdl.renderer, &rect);
         } else {
-            // if pixel is on draw bg colour
+            // if pixel is off draw bg colour
             SDL_SetRenderDrawColor(sdl.renderer, bg_r, bg_g, bg_b, bg_a);
             SDL_RenderFillRect(sdl.renderer, &rect);
         }
